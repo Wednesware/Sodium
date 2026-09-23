@@ -1,5 +1,8 @@
-x = 11
-
-if(x == 11){
-	print("hi")
+Thing = class() {
+    init = function(self) {
+        self.x = 10
+    }
 }
+
+thing = Thing(); x = thing.x;
+print(thing is class)

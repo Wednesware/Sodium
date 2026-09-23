@@ -1,100 +1,114 @@
-import re, json
+import json
+import re
 
 
 class Tokenizer:
     def __init__(self, sodium, options: list[str]) -> None:
         self.sodium = sodium
         self.options = options
-        self.content: str | None = None
-        self.tokenized: list[list[dict]] = []
         self.tokens: list[dict] = []
         self.index = 0
-        self.closers: list[str] = []
+        self.content: str | None = None
         self.error_position = 0
         self.error_end = 1
+        self.closers: list[str] = []
 
     def token(self, kind: str, value=None, children=None, position=None, end=None) -> dict:
-        token = {"type": kind, "value": value, "children": children or []}
+        item = {"type": kind, "value": value, "children": children or []}
         if position is not None:
-            token["position"] = position
-            token["end"] = end if end is not None else position + 1
-        return token
+            item["position"] = position
+            item["end"] = end if end is not None else position + 1
+        return item
 
     def run(self, content: str) -> list[list[dict]]:
         self.content = content
         self.tokens = self.lex(content)
         self.index = 0
-        self.tokenized = self.lines()
-        self.validate(self.tokenized)
+        parsed = self.lines()
         if "show-tokens" in self.options:
-            print(json.dumps(self.tokenized, indent=2, ensure_ascii=False))
-        return self.tokenized
-
-    def validate(self, values) -> None:
-        for value in values:
-            if isinstance(value, list):
-                self.validate(value)
-            elif value is not None:
-                self.validate(value["children"])
+            print(json.dumps(parsed, indent=2, ensure_ascii=False))
+        return parsed
 
     def lex(self, content: str) -> list[dict]:
-        tokens, index = [], 0
+        tokens: list[dict] = []
+        index = 0
         while index < len(content):
             char = content[index]
             if char in " \t\r":
                 index += 1
             elif char == "#":
-                index = content.find("\n", index)
-                if index < 0:
+                newline = content.find("\n", index)
+                if newline < 0:
                     break
-            elif char == "\n":
-                tokens.append(self.token("newline", "\n", position=index, end=index + 1))
+                index = newline + 1
+            elif char in {"\n", ";"}:
+                tokens.append(self.token("newline", char, position=index, end=index + 1))
                 index += 1
-            elif char in "'\"":
+            elif char in {'"', "'"}:
                 start = index
                 value, index = self.string(content, index)
                 tokens.append(self.token("string", value, position=start, end=index))
-            elif char == "b" and index + 1 < len(content) and content[index + 1] in "'\"":
+            elif char == "b" and index + 1 < len(content) and content[index + 1] in {'"', "'"}:
                 start = index
                 value, index = self.string(content, index + 1)
                 tokens.append(self.token("bytes", value.encode(), position=start, end=index))
-            elif char.isdigit() or char == "." and index + 1 < len(content) and content[index + 1].isdigit():
+            elif char.isdigit() or (char == "." and index + 1 < len(content) and content[index + 1].isdigit()):
                 start = index
-                match = re.match(r"(?:\d+\.?(?:\d*)?|\.\d+)(?:[eE][+-]?\d+)?", content[index:])
+                match = re.match(r"(?:\d+\.?\d*|\.\d)(?:[eE][+-]?\d+)?", content[index:])
+                if match is None:
+                    raise SyntaxError(f"invalid number at index {index}")
                 value = match.group()
-                index += len(value)
-                if index < len(content) and content[index] == "%":
-                    index += 1
-                    tokens.append(self.token("number", float(value) / 100, position=start, end=index))
-                else:
-                    tokens.append(self.token("number", float(value) if any(c in value for c in ".eE") else int(value), position=start, end=index))
+                number_index = index + len(value)
+                value_token = float(value) if any(item in value for item in ".eE") else int(value)
+                if number_index < len(content) and content[number_index] == "%":
+                    next_char = content[number_index + 1] if number_index + 1 < len(content) else ""
+                    if next_char.isdigit() or next_char == ".":
+                        index = number_index
+                        tokens.append(self.token("number", value_token, position=start, end=index))
+                        continue
+                    index = number_index + 1
+                    tokens.append(self.token("number", value_token / 100, position=start, end=index))
+                    continue
+                index = number_index
+                tokens.append(self.token("number", value_token, position=start, end=index))
             elif char.isalpha() or char == "_":
                 start = index
                 match = re.match(r"[A-Za-z_][A-Za-z0-9_]*", content[index:])
+                if match is None:
+                    raise SyntaxError(f"invalid identifier at index {index}")
                 value = match.group()
                 index += len(value)
-                tokens.append(self.token("literal", {"true": True, "false": False, "null": None}[value], position=start, end=index) if value in {"true", "false", "null"} else self.token("identifier", value, position=start, end=index))
+                if value in {"true", "false", "null"}:
+                    tokens.append(self.token("literal", {"true": True, "false": False, "null": None}[value], position=start, end=index))
+                else:
+                    tokens.append(self.token("identifier", value, position=start, end=index))
             else:
                 start = index
-                value = next((operator for operator in ("==", "!=", ">=", "<=", "**", "//") if content.startswith(operator, index)), char)
-                index += len(value)
-                tokens.append(self.token("symbol", value, position=start, end=index))
+                op = next((operator for operator in ("==", "!=", ">=", "<=", "**", "//") if content.startswith(operator, index)), char)
+                index += len(op)
+                tokens.append(self.token("symbol", op, position=start, end=index))
         tokens.append(self.token("eof", position=len(content), end=len(content)))
         return tokens
 
     def string(self, content: str, index: int) -> tuple[str, int]:
-        start, quote, index, value = index, content[index], index + 1, ""
-        while index < len(content) and content[index] != quote:
-            if content[index] == "\\" and index + 1 < len(content):
+        quote = content[index]
+        index += 1
+        value = ""
+        while index < len(content):
+            char = content[index]
+            if char == "\\" and index + 1 < len(content):
                 index += 1
-                value += {"n": "\n", "t": "\t", "r": "\r"}.get(content[index], content[index])
+                escaped = content[index]
+                value += {"n": "\n", "t": "\t", "r": "\r"}.get(escaped, escaped)
+                index += 1
+            elif char == quote:
+                return value, index + 1
             else:
-                value += content[index]
-            index += 1
-        if index == len(content):
-            self.error_position, self.error_end = start, index
-            raise SyntaxError("unterminated string")
-        return value, index + 1
+                value += char
+                index += 1
+        self.error_position = index
+        self.error_end = index + 1
+        raise SyntaxError("unterminated string literal")
 
     def peek(self, value=None) -> dict:
         token = self.tokens[self.index]
@@ -110,66 +124,122 @@ class Tokenizer:
         return token
 
     def lines(self, stop=None) -> list[list[dict]]:
-        lines = []
-        while self.peek()["type"] != "eof" and (stop is None or not self.peek(stop)):
-            if self.peek("\n"):
+        lines: list[list[dict]] = []
+        while self.peek()["type"] != "eof" and (stop is None or self.peek()["value"] != stop):
+            if self.peek()["type"] == "newline":
                 self.take()
-            else:
-                line = [self.statement()]
-                while not self.peek("\n") and (stop is None or not self.peek(stop)) and self.peek()["type"] != "eof":
-                    line.append(self.statement())
-                lines.append(line)
-                if self.peek("\n"):
+                continue
+            line: list[dict] = []
+            while True:
+                current = self.peek()
+                if current["type"] == "eof" or (stop is not None and current["value"] == stop):
+                    break
+                if current["type"] == "newline" or current["value"] == ";":
                     self.take()
+                    break
+                line.append(self.statement())
+            if line:
+                lines.append(line)
         return lines
 
     def statement(self) -> dict:
         if self.peek()["type"] == "identifier" and self.peek()["value"] == "return":
             self.take()
-            return self.token("return", children=[] if self.peek("\n") or self.peek("}") else [self.expression()])
+            if self.peek()["type"] == "newline" or self.peek()["value"] == ";" or self.peek()["value"] == "}" or self.peek()["type"] == "eof":
+                return self.token("return")
+            return self.token("return", children=[self.expression()])
+        if self.peek()["type"] == "identifier" and self.peek()["value"] == "import":
+            self.take()
+            if self.peek()["type"] in {"newline", "eof"} or self.peek()["value"] == "}":
+                raise SyntaxError("import requires a module name")
+            return self.token("import", children=[self.expression()])
         return self.expression()
 
     def expression(self, minimum=0) -> dict:
         left = self.prefix()
-        precedence = {"=": 1, "if": 2, "unless": 2, "or": 3, "and": 4,
-                      "in": 5, "is": 5, "not in": 5, "is not": 5, "==": 5, "!=": 5,
-                      ">": 5, "<": 5, ">=": 5, "<=": 5, "+": 6, "-": 6, "*": 7,
-                      "/": 7, "//": 7, "%": 7, "^": 8, "**": 8}
         while True:
-            if self.peek()["value"] in self.closers:
+            if self.peek()["value"] == "%" and not self.is_modulo_operator():
+                self.take()
+                left = self.token("percent", children=[left])
+                continue
+            current = self.peek()
+            if current["type"] == "eof" or current["value"] in self.closers or current["type"] == "newline" or current["value"] == ";":
                 break
             operator = self.operator()
-            level = precedence.get(operator, -1)
-            if level < minimum:
+            if operator is None or self.precedence(operator) < minimum:
                 break
             self.take()
             if operator in {"not in", "is not"}:
                 self.take()
-            left = self.token("assignment" if operator == "=" else "operator", operator, [left, self.expression(level + (operator != "=" and operator not in {"^", "**"}))])
+            right = self.expression(self.precedence(operator) + 1)
+            left = self.token("assignment" if operator == "=" else "operator", operator, [left, right])
         return left
 
-    def operator(self) -> str:
-        if self.peek()["type"] == "identifier":
-            word = self.peek()["value"]
+    def is_modulo_operator(self) -> bool:
+        if self.peek()["value"] != "%":
+            return False
+        index = self.index + 1
+        if index >= len(self.tokens):
+            return False
+        next_token = self.tokens[index]
+        return next_token.get("type") == "number"
+
+    def precedence(self, operator: str) -> int:
+        table = {
+            "=": 1,
+            "or": 2,
+            "and": 3,
+            "==": 4,
+            "!=": 4,
+            ">": 4,
+            "<": 4,
+            ">=": 4,
+            "<=": 4,
+            "in": 4,
+            "is": 4,
+            "not in": 4,
+            "is not": 4,
+            "+": 5,
+            "-": 5,
+            "*": 6,
+            "/": 6,
+            "//": 6,
+            "%": 6,
+            "**": 7,
+            "^": 7,
+        }
+        return table.get(operator, -1)
+
+    def operator(self):
+        current = self.peek()
+        if current["type"] == "identifier":
+            word = current["value"]
             if word == "not" and self.tokens[self.index + 1]["value"] in {"in", "is"}:
                 return f"not {self.tokens[self.index + 1]['value']}"
             if word == "is" and self.tokens[self.index + 1]["value"] == "not":
                 return "is not"
-            return word
-        return self.peek()["value"]
+            if word in {"and", "or", "in", "is", "not"}:
+                return word
+            return None
+        value = current["value"]
+        if value in {"==", "!=", ">=", "<=", "+", "-", "*", "/", "//", "%", "**", "^", "=", ">", "<"}:
+            return value
+        return None
 
     def prefix(self) -> dict:
-        if self.peek()["value"] in {"+", "-"} or self.peek()["type"] == "identifier" and self.peek()["value"] == "not":
-            return self.token("unary", self.take()["value"], [self.prefix()])
+        current = self.peek()
+        if current["value"] in {"+", "-"} or (current["type"] == "identifier" and current["value"] == "not"):
+            operator = self.take()["value"]
+            return self.token("unary", operator, [self.prefix()])
         node = self.atom()
         while True:
             if self.peek("("):
                 node = self.token("call", children=[node, *self.items("(", ")")])
             elif self.peek("["):
-                self.take()
+                self.take("[")
                 start = None if self.peek(":") else self.expression()
                 if self.peek(":"):
-                    self.take()
+                    self.take(":")
                     end = None if self.peek("]") else self.expression()
                     self.take("]")
                     node = self.token("slice", children=[node, start, end])
@@ -177,13 +247,13 @@ class Tokenizer:
                     self.take("]")
                     node = self.token("index", children=[node, start])
             elif self.peek("."):
-                self.take()
-                member = self.take()
-                if member["type"] != "identifier":
-                    raise SyntaxError("expected member name")
-                node = self.token("member", member["value"], [node])
+                self.take(".")
+                attribute = self.take()
+                if attribute["type"] != "identifier":
+                    raise SyntaxError("expected property name")
+                node = self.token("member", attribute["value"], [node])
             elif self.peek("{"):
-                self.take()
+                self.take("{")
                 node = self.token("handler", children=[node, *self.lines("}")])
                 self.take("}")
             else:
@@ -194,9 +264,9 @@ class Tokenizer:
         if token["type"] in {"string", "number", "bytes", "literal", "identifier"}:
             return token
         if token["value"] == "(":
-            node = self.expression()
+            inner = self.expression()
             self.take(")")
-            return node
+            return inner
         if token["value"] == "[":
             return self.token("array", children=self.items_open("]"))
         if token["value"] == "{":
@@ -210,18 +280,18 @@ class Tokenizer:
         return self.items_open(closing)
 
     def items_open(self, closing: str) -> list[dict]:
-        values = []
+        values: list[dict] = []
         while not self.peek(closing):
             values.append(self.expression())
             if not self.peek(","):
                 break
-            self.take()
+            self.take(",")
         self.take(closing)
         return values
 
     def collection(self, closing: str) -> dict:
         if self.peek(closing):
-            self.take()
+            self.take(closing)
             return self.token("map")
         index = self.index
         first = self.expression()
@@ -230,13 +300,13 @@ class Tokenizer:
             return self.token("map", children=self.pairs(closing))
         values = [first]
         while self.peek(","):
-            self.take()
+            self.take(",")
             values.append(self.expression())
         self.take(closing)
         return self.token("set", children=values)
 
     def pairs(self, closing: str) -> list[dict]:
-        pairs = []
+        pairs: list[dict] = []
         self.closers.append(closing)
         try:
             while not self.peek(closing):
@@ -245,7 +315,7 @@ class Tokenizer:
                 pairs.append(self.token("pair", children=[key, self.expression()]))
                 if not self.peek(","):
                     break
-                self.take()
+                self.take(",")
             self.take(closing)
         finally:
             self.closers.pop()
