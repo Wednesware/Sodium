@@ -1,10 +1,6 @@
 import json
 import re
 
-_IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_NUMBER_RE = re.compile(r"(?:\d+\.?\d*|\.\d)(?:[eE][+-]?\d+)?")
-_ESCAPE_MAP = {"n": "\n", "t": "\t", "r": "\r"}
-
 
 class Tokenizer:
     def __init__(self, sodium, options: list[str]) -> None:
@@ -58,7 +54,7 @@ class Tokenizer:
                 tokens.append(self.token("bytes", value.encode(), position=start, end=index))
             elif char.isdigit() or (char == "." and index + 1 < len(content) and content[index + 1].isdigit()):
                 start = index
-                match = _NUMBER_RE.match(content, index)
+                match = re.match(r"(?:\d+\.?\d*|\.\d)(?:[eE][+-]?\d+)?", content[index:])
                 if match is None:
                     raise SyntaxError(f"invalid number at index {index}")
                 value = match.group()
@@ -77,7 +73,7 @@ class Tokenizer:
                 tokens.append(self.token("number", value_token, position=start, end=index))
             elif char.isalpha() or char == "_":
                 start = index
-                match = _IDENTIFIER_RE.match(content, index)
+                match = re.match(r"[A-Za-z_][A-Za-z0-9_]*", content[index:])
                 if match is None:
                     raise SyntaxError(f"invalid identifier at index {index}")
                 value = match.group()
@@ -103,7 +99,7 @@ class Tokenizer:
             if char == "\\" and index + 1 < len(content):
                 index += 1
                 escaped = content[index]
-                value += _ESCAPE_MAP.get(escaped, escaped)
+                value += {"n": "\n", "t": "\t", "r": "\r"}.get(escaped, escaped)
                 index += 1
             elif char == quote:
                 return value, index + 1
