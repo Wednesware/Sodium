@@ -122,6 +122,51 @@ def test_is_compares_value_to_type():
     ''') == 0
 
 
+def test_trigger_runs_registered_handlers_from_project_files(tmp_path, monkeypatch, capsys):
+    module_path = tmp_path / "game.na"
+    module_path.write_text('''
+        on("playerSpawned", player = null) {
+            print("Welcome, " + player.name)
+        }
+    ''')
+
+    main = tmp_path / "main.na"
+    main.write_text('''
+        trigger("playerSpawned", { name: "Alice" })
+        trigger("playerSpawned", { name: "Bob" })
+    ''')
+
+    monkeypatch.chdir(tmp_path)
+    tokens = Tokenizer(SODIUM, []).run(main.read_text())
+    Interpreter(SODIUM, []).run(tokens, main.read_text(), str(main))
+
+    captured = capsys.readouterr()
+    assert captured.out.count("Welcome") == 2
+    assert "Alice" in captured.out
+    assert "Bob" in captured.out
+
+
+def test_imported_modules_are_cached_and_only_execute_once(tmp_path, capsys):
+    module_path = tmp_path / "counter.na"
+    module_path.write_text('''
+        print("loaded")
+        value = 42
+    ''')
+
+    main = tmp_path / "main.na"
+    main.write_text('''
+        import "counter"
+        import "counter"
+        print(value)
+    ''')
+
+    result = Interpreter(SODIUM, []).run(Tokenizer(SODIUM, []).run(main.read_text()), main.read_text(), str(main))
+    assert result == 0
+    captured = capsys.readouterr()
+    assert captured.out.count("loaded") == 1
+    assert captured.out.count("42") == 1
+
+
 def test_top_level_run_returns_zero_for_success():
     assert run_source('x = 10') == 0
     assert run_source('print(1)') == 0
