@@ -153,35 +153,6 @@ def test_trigger_runs_registered_handlers_from_project_files(tmp_path, monkeypat
     assert "Bob" in captured.out
 
 
-def test_trigger_values_can_be_awaited_from_handlers(tmp_path, monkeypatch, capsys):
-    (tmp_path / "game.na").write_text('''
-        on("getNumber") {
-            return 42
-        }
-
-        on("getNumber") {
-            return 99
-        }
-    ''')
-
-    main = tmp_path / "main.na"
-    main.write_text('''
-        value = await{ trigger("getNumber") }
-        print(value)
-    ''')
-
-    monkeypatch.chdir(tmp_path)
-    result = Interpreter(SODIUM, []).run(
-        Tokenizer(SODIUM, []).run(main.read_text()),
-        main.read_text(),
-        str(main),
-    )
-
-    captured = capsys.readouterr()
-    assert result == 0
-    assert "[42, 99]" in captured.out or "42" in captured.out
-
-
 def test_trigger_discovery_raises_real_errors_for_bad_project_files(tmp_path, monkeypatch):
     (tmp_path / "broken.na").write_text('''
         on("start") {
@@ -310,6 +281,16 @@ def test_end_trigger_only_fires_once_when_triggered_manually(tmp_path, monkeypat
     captured = capsys.readouterr()
     assert result == 0
     assert captured.out.count("end triggered") == 1
+
+
+def test_skelebash_boot_sequence_uses_startBonemarrow_and_relative_audio_path():
+    repo_root = Path(__file__).resolve().parents[1]
+    start_game = repo_root / "skelebash" / "skelebash" / "startGame.na"
+    bonemarrow = repo_root / "skelebash" / "skelebash" / "bmrw" / "startBonemarrow.na"
+
+    assert 'trigger("startBonemarrow")' in start_game.read_text()
+    assert 'on("startBonemarrow")' in bonemarrow.read_text()
+    assert 'play("{_here}/../sfx/start.wav")' in bonemarrow.read_text()
 
 
 def test_placeholder_strings_evaluate_expressions_and_allow_escaped_braces(capsys):

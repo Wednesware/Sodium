@@ -1,1 +1,2 @@
 trigger("start")
+print("this should run second")

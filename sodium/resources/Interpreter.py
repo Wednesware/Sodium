@@ -381,7 +381,7 @@ class Interpreter:
 
         func = {
             "kind": "function",
-            "name": f'on("{trigger_name}")',
+            "name": None,
             "params": params,
             "defaults": defaults,
             "body": [],
@@ -548,7 +548,7 @@ class Interpreter:
                         continue
                 handlers.append({
                     "kind": "function",
-                    "name": f'on("{trigger_name}")',
+                    "name": None,
                     "params": params,
                     "defaults": defaults,
                     "body": children[1:],
@@ -1556,7 +1556,7 @@ class Interpreter:
                         elif isinstance(child, dict) and child.get("type") == "identifier":
                             params.append(child["value"])
                             defaults[child["value"]] = None
-                    func = {"kind": "function", "name": f'on("{trigger_name}")', "params": params, "defaults": defaults, "body": body, "scope": list(self.scopes), "trigger_name": str(trigger_name), "source": self.filename if self.filename not in {"<source>", ""} else "<source>", "content": self.content}
+                    func = {"kind": "function", "name": None, "params": params, "defaults": defaults, "body": body, "scope": list(self.scopes), "trigger_name": str(trigger_name), "source": self.filename if self.filename not in {"<source>", ""} else "<source>", "content": self.content}
                     self._register_trigger_handler(func)
                     return func
                 if isinstance(callee_value, dict) and callee_value.get("kind") == "function":

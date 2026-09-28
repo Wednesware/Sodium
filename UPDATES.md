@@ -2,7 +2,7 @@
 
 * Interpreter
 * Tokenizer
-* Library and
+* Library
 * CLI
 * Bug fixes
 
@@ -22,3 +22,11 @@
 # 26.5
 
 * New `await{}` built-in handler added (`await{trigger("myTrigger")}`)
+
+# 26.6
+
+* Removed `await{}` in favor of synchronous triggers
+
+## Bug fixes
+
+* Fixed trigger execution order
