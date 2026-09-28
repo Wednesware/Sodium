@@ -298,6 +298,12 @@ class Tokenizer:
         if current["value"] in {"+", "-"} or (current["type"] == "identifier" and current["value"] == "not"):
             operator = self.take()["value"]
             return self.token("unary", operator, [self.prefix()])
+        if current["type"] == "identifier" and current["value"] == "await" and self.index + 1 < len(self.tokens) and self.tokens[self.index + 1].get("value") == "{":
+            self.take()
+            self.take("{")
+            value = self.expression()
+            self.take("}")
+            return self.token("call", children=[self.token("identifier", "await", position=current.get("position")), value])
         node = self.atom()
         while True:
             if self.peek("("):

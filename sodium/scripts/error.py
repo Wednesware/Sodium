@@ -17,6 +17,7 @@ def error(sodium, message: str | BaseException, source: str = "<source>", conten
         end = position + 1
 
     if frames:
+        print("Traceback (most recent call last):")
         for frame in frames:
             frame_name = frame.get("name", "<anonymous>") if isinstance(frame, dict) else "<anonymous>"
             frame_source = frame.get("source", source) if isinstance(frame, dict) else source

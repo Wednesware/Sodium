@@ -10,11 +10,15 @@
 
 * Vastly improved error handling
 * Proper traceback for errors
-* Revamped `trigger`/`on` system.
-* Revamped `.`/`:` handling and usage.
+* Revamped `trigger`/`on` system
+* Revamped `.`/`:` handling and usage
 
 ## Bug fixes
 
 * Readded `from` syntax (`x from y`)
-* Readded various accidentally removed built-in functions and language features
-* Various small fixes.
+* Readded various accidentally removed built-in functions, handlers and language features
+* Various small fixes
+
+# 26.5
+
+* New `await{}` built-in handler added (`await{trigger("myTrigger")}`)
