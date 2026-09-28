@@ -7,13 +7,15 @@ except ImportError:
 Project = require("helium").Project
 Color = require("magnesium.color").Color
 FilePath = require("magnesium.filepath").FilePath
+Terminal = require("neon.terminal").Terminal
 
 
 SODIUM: Project = Project(__file__, ".") # type: ignore
 SODIUM.Project = Project
 SODIUM.Color = Color
 SODIUM.FilePath = FilePath
-SODIUM.VERSION = "26.3"
+SODIUM.Terminal = Terminal
+SODIUM.VERSION = "26.4"
 SODIUM.OPTION_PREFIX = "--sodium-"
 SODIUM.KNOWN_OPTIONS = ["bg", "bg-task", "show-tokens", "no-exec"]
 SODIUM.KNOWN_COMMANDS = ["help", "version", "credits", "copyright", "license", "open-license"]

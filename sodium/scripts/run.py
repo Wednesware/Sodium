@@ -23,5 +23,13 @@ def run(sodium, args, options) -> None:
         exit(interpreter.run(tokens, sodium.content, source))
     except Exception as exception:
         owner = interpreter if interpreter.content else tokenizer
-        sodium.script.error(str(exception) or exception.__class__.__name__, source, getattr(sodium, "content", ""), owner.error_position, owner.error_end, "syntax" if isinstance(exception, SyntaxError) else "name" if isinstance(exception, NameError) else "runtime")
+        sodium.script.error(
+            exception,
+            source,
+            getattr(sodium, "content", ""),
+            owner.error_position,
+            owner.error_end,
+            "syntax" if isinstance(exception, SyntaxError) else "name" if isinstance(exception, NameError) else "runtime",
+            getattr(exception, "frames", None),
+        )
         raise SystemExit(1)

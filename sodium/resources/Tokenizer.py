@@ -12,9 +12,11 @@ class Tokenizer:
         self.error_position = 0
         self.error_end = 1
         self.closers: list[str] = []
+        self._collection_key_mode = False
 
-    def token(self, kind: str, value=None, children=None, position=None, end=None) -> dict:
+    def token(self, kind: str, value=None, children=None, position=None, end=None, **extra) -> dict:
         item = {"type": kind, "value": value, "children": children or []}
+        item.update(extra)
         if position is not None:
             item["position"] = position
             item["end"] = end if end is not None else position + 1
@@ -46,8 +48,8 @@ class Tokenizer:
                 index += 1
             elif char in {'"', "'"}:
                 start = index
-                value, index = self.string(content, index)
-                tokens.append(self.token("string", value, position=start, end=index))
+                value, index, template = self.string(content, index)
+                tokens.append(self.token("string", value, position=start, end=index, template=template))
             elif char == "b" and index + 1 < len(content) and content[index + 1] in {'"', "'"}:
                 start = index
                 value, index = self.string(content, index + 1)
@@ -90,25 +92,83 @@ class Tokenizer:
         tokens.append(self.token("eof", position=len(content), end=len(content)))
         return tokens
 
-    def string(self, content: str, index: int) -> tuple[str, int]:
+    def string(self, content: str, index: int) -> tuple[str, int, dict | None]:
         quote = content[index]
         index += 1
-        value = ""
+        literal = ""
+        parts: list[str | dict] = []
         while index < len(content):
             char = content[index]
             if char == "\\" and index + 1 < len(content):
-                index += 1
-                escaped = content[index]
-                value += {"n": "\n", "t": "\t", "r": "\r"}.get(escaped, escaped)
-                index += 1
-            elif char == quote:
-                return value, index + 1
-            else:
-                value += char
-                index += 1
+                escaped = content[index + 1]
+                if escaped in {"{", "}"}:
+                    literal += escaped
+                    index += 2
+                    continue
+                literal += {"n": "\n", "t": "\t", "r": "\r"}.get(escaped, escaped)
+                index += 2
+                continue
+            if char == "{" and not (index > 0 and content[index - 1] == "\\"):
+                if literal:
+                    parts.append(literal)
+                    literal = ""
+                expression_start = index + 1
+                depth = 1
+                cursor = expression_start
+                while cursor < len(content) and depth > 0:
+                    current = content[cursor]
+                    if current == "\\" and cursor + 1 < len(content):
+                        cursor += 2
+                        continue
+                    if current in {'"', "'"}:
+                        delim = current
+                        cursor += 1
+                        while cursor < len(content):
+                            if content[cursor] == "\\" and cursor + 1 < len(content):
+                                cursor += 2
+                                continue
+                            if content[cursor] == delim:
+                                cursor += 1
+                                break
+                            cursor += 1
+                        continue
+                    if current == "{":
+                        depth += 1
+                    elif current == "}":
+                        depth -= 1
+                    cursor += 1
+                if depth != 0:
+                    self.error_position = index
+                    self.error_end = index + 1
+                    raise SyntaxError("unterminated string interpolation")
+                expression = content[expression_start:cursor - 1]
+                parts.append(self._parse_interpolated_expression(expression))
+                index = cursor
+                continue
+            if char == quote:
+                if literal:
+                    parts.append(literal)
+                if not parts:
+                    return literal, index + 1, None
+                template = {"parts": parts}
+                return "".join(part for part in parts if isinstance(part, str)), index + 1, template
+            literal += char
+            index += 1
         self.error_position = index
         self.error_end = index + 1
         raise SyntaxError("unterminated string literal")
+
+    def _parse_interpolated_expression(self, expression: str):
+        source = expression.strip()
+        if not source:
+            raise SyntaxError("empty string interpolation")
+        tokenizer = type(self)(self.sodium, self.options)
+        parsed = tokenizer.run(source)
+        if not parsed or not parsed[0]:
+            raise SyntaxError("empty string interpolation")
+        if len(parsed) != 1 or len(parsed[0]) != 1:
+            raise SyntaxError("string interpolation supports a single expression")
+        return parsed[0][0]
 
     def peek(self, value=None) -> dict:
         token = self.tokens[self.index]
@@ -165,6 +225,13 @@ class Tokenizer:
             current = self.peek()
             if current["type"] == "eof" or current["value"] in self.closers or current["type"] == "newline" or current["value"] == ";":
                 break
+            if current["type"] == "identifier" and current["value"] == "from":
+                self.take()
+                if not isinstance(left, dict) or left.get("type") != "identifier":
+                    raise SyntaxError("from bindings require identifiers on the left-hand side")
+                source = self.expression(self.precedence("=") + 1)
+                left = self.token("from", children=[source, left])
+                continue
             operator = self.operator()
             if operator is None or self.precedence(operator) < minimum:
                 break
@@ -252,6 +319,12 @@ class Tokenizer:
                 if attribute["type"] != "identifier":
                     raise SyntaxError("expected property name")
                 node = self.token("member", attribute["value"], [node])
+            elif self.peek(":") and not self._collection_key_mode:
+                self.take(":")
+                attribute = self.take()
+                if attribute["type"] != "identifier":
+                    raise SyntaxError("expected instance member name")
+                node = self.token("instance_member", attribute["value"], [node])
             elif self.peek("{"):
                 self.take("{")
                 node = self.token("handler", children=[node, *self.lines("}")])
@@ -294,7 +367,11 @@ class Tokenizer:
             self.take(closing)
             return self.token("map")
         index = self.index
-        first = self.expression()
+        self._collection_key_mode = True
+        try:
+            first = self.expression()
+        finally:
+            self._collection_key_mode = False
         if self.peek(":"):
             self.index = index
             return self.token("map", children=self.pairs(closing))
@@ -310,7 +387,12 @@ class Tokenizer:
         self.closers.append(closing)
         try:
             while not self.peek(closing):
-                key = self.expression()
+                previous_mode = self._collection_key_mode
+                self._collection_key_mode = True
+                try:
+                    key = self.expression()
+                finally:
+                    self._collection_key_mode = previous_mode
                 self.take(":")
                 pairs.append(self.token("pair", children=[key, self.expression()]))
                 if not self.peek(","):

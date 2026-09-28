@@ -1,1 +1,3 @@
-x = 25
+on("start") {
+    test
+}

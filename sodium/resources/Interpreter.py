@@ -7,9 +7,25 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 
+class SodiumError(RuntimeError):
+    def __init__(self, message: str, *, kind: str = "runtime", filename: str = "<source>", position: int = 0, end: int | None = None, frames: list[dict] | None = None, content: str = "") -> None:
+        super().__init__(message)
+        self.kind = kind
+        self.message = str(message)
+        self.filename = filename
+        self.position = position
+        self.end = position + 1 if end is None else end
+        self.frames = list(frames or [])
+        self.content = content
+
+    def __str__(self) -> str:
+        return self.message
+
+
 class Interpreter:
     _trigger_registry: dict[str, list[dict]] = {}
-    _trigger_scan_complete = False
+    _trigger_scan_roots_done: set[str] = set()
+    _module_cache: dict[str, dict] = {}
 
     def __init__(self, sodium, options: list[str]) -> None:
         self.sodium = sodium
@@ -17,19 +33,44 @@ class Interpreter:
         self.scopes: list[dict] = []
         self.content = ""
         self.filename = "<source>"
+        self.path = ""
         self.error_position = 0
         self.error_end = 1
+        self.call_stack: list[dict] = []
+        self._trigger_dispatching: set[str] = set()
+        self._end_trigger_fired = False
 
-    def run(self, tokens: list[list[dict]], content: str = "", filename: str = "<source>", argv: list[str] | None = None):
+    def run(self, tokens: list[list[dict]], content: str = "", filename: str = "<source>", path: str = "", argv: list[str] | None = None):
+        self.__class__._trigger_registry.clear()
+        self.__class__._trigger_scan_roots_done.clear()
+        self.__class__._module_cache.clear()
         self.content = content
         self.filename = filename
+        self.path = path or filename if filename not in {"<source>", ""} else ""
         self.scopes = [self.builtins(), {}]
+        self._end_trigger_fired = False
         if argv is not None:
             self.scopes[-1]["argv"] = list(argv)
-        value = self.lines(tokens)
-        if isinstance(value, tuple) and value[0] == "return":
-            return value[1]
-        return 0
+        self.call_stack = [{"name": "main", "source": self.filename or "<source>", "position": 0, "end": 1, "content": self.content}]
+        try:
+            value = self.lines(tokens)
+            if isinstance(value, tuple) and value[0] == "return":
+                return value[1]
+            if not self._end_trigger_fired:
+                self._builtin_trigger("end")
+                self._end_trigger_fired = True
+            return 0
+        except Exception:
+            if not self._end_trigger_fired:
+                self._end_trigger_fired = True
+                try:
+                    self._builtin_trigger("end")
+                except Exception:
+                    pass
+            raise
+        finally:
+            if self.call_stack:
+                self.call_stack.pop()
 
     def _sodium_type_name(self, python_name: str) -> str:
         return {
@@ -57,7 +98,33 @@ class Interpreter:
     def fail(self, token: dict | None, message: str, kind=RuntimeError):
         token = token or {}
         self.mark(token)
-        raise kind(self._translate_type_names(message))
+        if isinstance(kind, type):
+            kind_name = kind.__name__
+        else:
+            kind_name = str(kind)
+        if kind_name == "SyntaxError":
+            error_kind = "syntax"
+        elif kind_name == "NameError":
+            error_kind = "name"
+        else:
+            error_kind = "runtime"
+        frames = [dict(frame) for frame in self.call_stack]
+        if frames:
+            frames[-1]["position"] = self.error_position
+            frames[-1]["end"] = self.error_end
+            frames[-1]["source"] = self.filename or frames[-1].get("source", "<source>")
+            frames[-1].setdefault("content", self.content)
+        else:
+            frames = [{"name": "main", "source": self.filename or "<source>", "position": self.error_position, "end": self.error_end, "content": self.content}]
+        raise SodiumError(
+            self._translate_type_names(message),
+            kind=error_kind,
+            filename=self.filename or "<source>",
+            position=self.error_position,
+            end=self.error_end,
+            frames=frames,
+            content=self.content,
+        )
 
     def mark(self, token: dict):
         if not token:
@@ -71,7 +138,17 @@ class Interpreter:
             self.error_position = children[0].get("position", self.error_position)
             self.error_end = children[-1].get("end", self.error_position + 1)
 
+    def _resolve_file_context(self, filename: str | None = None, path: str | None = None):
+        file_path = ""
+        candidate = filename or path or self.filename or self.path or ""
+        if candidate not in {"<source>", ""}:
+            file_path = str(Path(candidate).resolve())
+        dir_path = str(Path(file_path).parent) if file_path else ""
+        return file_path, dir_path
+
     def builtins(self) -> dict:
+        file_path, dir_path = self._resolve_file_context(self.filename, self.path)
+
         builtins = {
             "print": self._builtin_print,
             "input": self._builtin_input,
@@ -110,7 +187,16 @@ class Interpreter:
             "continue": {"kind": "continue", "name": "continue", "value": False},
             "true": True,
             "false": False,
+            "_this": file_path,
+            "_here": dir_path
         }
+        return builtins
+
+    def builtins_for_file(self, filename: str | None = None, path: str | None = None):
+        file_path, dir_path = self._resolve_file_context(filename, path)
+        builtins = self.builtins()
+        builtins["_this"] = file_path
+        builtins["_here"] = dir_path
         return builtins
 
     def _fmt_value(self, value, depth=0):
@@ -298,6 +384,7 @@ class Interpreter:
             "scope": list(self.scopes),
             "trigger_name": str(trigger_name),
             "source": self.filename if self.filename not in {"<source>", ""} else "<source>",
+            "content": self.content,
         }
         self._register_trigger_handler(func)
         return func
@@ -307,43 +394,43 @@ class Interpreter:
             raise TypeError("trigger() requires a trigger name")
 
         trigger_name = str(trigger_name)
+        if trigger_name == "end":
+            self._end_trigger_fired = True
+        if trigger_name in self._trigger_dispatching:
+            return []
         self._discover_trigger_handlers()
         results: list[object] = []
-        for handler in self.__class__._trigger_registry.get(trigger_name, []):
-            if not isinstance(handler, dict) or handler.get("kind") != "function":
-                continue
-            results.append(self.invoke_function(handler, list(args), {}, dict(kwargs)))
-        return results
+        self._trigger_dispatching.add(trigger_name)
+        try:
+            for handler in self.__class__._trigger_registry.get(trigger_name, []):
+                if not isinstance(handler, dict) or handler.get("kind") != "function":
+                    continue
+                results.append(self.invoke_function(handler, list(args), {}, dict(kwargs)))
+            return results
+        finally:
+            self._trigger_dispatching.discard(trigger_name)
 
     def _discover_trigger_handlers(self):
-        if self.__class__._trigger_scan_complete:
-            return
-        self.__class__._trigger_scan_complete = True
-
         for root in self._trigger_scan_roots():
+            resolved = str(root.resolve())
+            if resolved in self.__class__._trigger_scan_roots_done:
+                continue
+            self.__class__._trigger_scan_roots_done.add(resolved)
             for file_path in self._iter_trigger_files(root):
-                try:
-                    source = file_path.read_text(encoding="utf-8")
-                except OSError:
-                    continue
-                try:
-                    tokens = self.sodium.res.Tokenizer(self.sodium, self.options).run(source)
-                except Exception:
-                    continue
+                source = file_path.read_text(encoding="utf-8")
+                tokens = self.sodium.res.Tokenizer(self.sodium, self.options).run(source)
                 for handler in self._handlers_from_tokens(tokens, source, str(file_path)):
                     self._register_trigger_handler(handler)
 
     def _trigger_scan_roots(self):
         roots: list[Path] = []
-        cwd = Path.cwd().resolve()
-        if cwd.exists() and cwd.is_dir() and not self._directory_is_too_large(cwd):
-            roots.append(cwd)
-
-        if self.filename not in {"<source>", ""}:
-            file_dir = Path(self.filename).resolve().parent
-            if file_dir.exists() and file_dir.is_dir() and not self._directory_is_too_large(file_dir):
-                roots.append(file_dir)
-
+        filename_value = self.filename or ""
+        if filename_value not in {"<source>", ""}:
+            filename_path = Path(filename_value)
+            if filename_path.exists() and filename_path.is_file():
+                file_dir = filename_path.resolve().parent
+                if file_dir.exists() and file_dir.is_dir() and not self._directory_is_too_large(file_dir):
+                    roots.append(file_dir)
         ordered: list[Path] = []
         seen: set[str] = set()
         for root in roots:
@@ -461,9 +548,10 @@ class Interpreter:
                     "params": params,
                     "defaults": defaults,
                     "body": children[1:],
-                    "scope": [self.builtins(), {}],
+                    "scope": [self.builtins_for_file(filename), {}],
                     "trigger_name": trigger_name,
                     "source": filename,
+                    "content": source,
                 })
             for child in node.get("children", []):
                 if isinstance(child, dict):
@@ -536,6 +624,12 @@ class Interpreter:
                 direct_path = candidate.resolve()
 
         if direct_path is not None:
+            resolved = str(direct_path)
+            if resolved in self.__class__._module_cache:
+                imported = self.__class__._module_cache[resolved]
+                if isinstance(imported, dict):
+                    self.scopes[-1].update(imported)
+                return imported
             source = direct_path.read_text()
             tokenizer = self.sodium.res.Tokenizer(self.sodium, self.options)
             previous_filename = self.filename
@@ -550,6 +644,7 @@ class Interpreter:
                 if isinstance(module_result, tuple) and module_result[0] == "return":
                     module_result = module_result[1]
                 imported = module_interpreter.scopes[-1]
+                self.__class__._module_cache[resolved] = imported
                 if isinstance(imported, dict):
                     self.scopes[-1].update(imported)
                 return imported
@@ -570,6 +665,12 @@ class Interpreter:
                     break
             else:
                 continue
+            resolved = str(path.resolve())
+            if resolved in self.__class__._module_cache:
+                imported = self.__class__._module_cache[resolved]
+                if isinstance(imported, dict):
+                    self.scopes[-1].update(imported)
+                return imported
             source = path.read_text()
             tokenizer = self.sodium.res.Tokenizer(self.sodium, self.options)
             previous_filename = self.filename
@@ -584,6 +685,7 @@ class Interpreter:
                 if isinstance(module_result, tuple) and module_result[0] == "return":
                     module_result = module_result[1]
                 imported = module_interpreter.scopes[-1]
+                self.__class__._module_cache[resolved] = imported
                 if isinstance(imported, dict):
                     self.scopes[-1].update(imported)
                 return imported
@@ -671,11 +773,27 @@ class Interpreter:
         if kind == "map":
             result = {}
             for pair in children:
-                key = self.value(pair["children"][0])
-                result[key] = self.value(pair["children"][1])
+                if not isinstance(pair, dict):
+                    continue
+                key_token = pair.get("children", [None, None])[0]
+                if isinstance(key_token, dict) and key_token.get("type") == "identifier":
+                    key = key_token.get("value")
+                else:
+                    key = self.value(key_token)
+                result[key] = self.value(pair.get("children", [None, None])[1])
             return result
         if kind == "custom":
-            return {self.value(pair["children"][0]): self.value(pair["children"][1]) for pair in children}
+            result = {}
+            for pair in children:
+                if not isinstance(pair, dict):
+                    continue
+                key_token = pair.get("children", [None, None])[0]
+                if isinstance(key_token, dict) and key_token.get("type") == "identifier":
+                    key = key_token.get("value")
+                else:
+                    key = self.value(key_token)
+                result[key] = self.value(pair.get("children", [None, None])[1])
+            return result
         if kind == "member":
             return self.member(self.value(children[0]), value, token)
         if kind == "instance_member":
@@ -998,20 +1116,26 @@ class Interpreter:
                     return found
                 label = obj.get("name") or "class"
                 self.fail(token, f"'{label}' has no member {name!r}", AttributeError)
+            if name in obj:
+                if "__class__" in obj:
+                    subject = obj.get("__class__", obj)
+                    label = getattr(subject, "__name__", None) or getattr(subject, "name", None) or self.public_type_name(subject)
+                    self.fail(token, f"'{label}' does not support '.' access", AttributeError)
+                return obj[name]
             if "__class__" in obj:
                 subject = obj.get("__class__", obj)
                 label = getattr(subject, "__name__", None) or getattr(subject, "name", None) or self.public_type_name(subject)
-                self.fail(token, f"'{label}' does not support '.' access; use ':' for instance members", AttributeError)
-            if name in obj:
-                self.fail(token, f"'{self.public_type_name(obj)}' does not support '.' access; use ':' for instance members", AttributeError)
+                self.fail(token, f"'{label}' does not support '.' access", AttributeError)
+            label = self.public_type_name(obj)
+            self.fail(token, f"'{label}' does not support '.' access", AttributeError)
+        if hasattr(obj, name):
+            return getattr(obj, name)
         if isinstance(obj, type):
-            if hasattr(obj, name):
-                return getattr(obj, name)
             label = getattr(obj, "__name__", None) or self.public_type_name(obj)
             self.fail(token, f"'{label}' has no member {name!r}", AttributeError)
         subject = obj.get("__class__", obj) if isinstance(obj, dict) else obj
         label = getattr(subject, "__name__", None) or getattr(subject, "name", None) or self.public_type_name(subject)
-        self.fail(token, f"'{label}' does not support '.' access; use ':' for instance members", AttributeError)
+        self.fail(token, f"'{label}' does not support '.' access", AttributeError)
 
     def instance_member(self, obj, name: str, token: dict):
         if isinstance(obj, dict):
@@ -1126,6 +1250,17 @@ class Interpreter:
                 self.fail(argument, "starred value must be an array, set, tuple, or map", TypeError)
             args.append(self.value(argument))
 
+        callee_name = "<anonymous>"
+        if isinstance(callee, dict):
+            if callee.get("type") == "identifier":
+                callee_name = str(callee.get("value", callee_name))
+            elif callee.get("type") == "member":
+                member_name = callee.get("value")
+                if isinstance(member_name, str):
+                    callee_name = member_name
+        elif hasattr(target, "__name__") and target.__name__:
+            callee_name = str(target.__name__)
+
         if isinstance(target, dict):
             kind = target.get("kind")
             if kind == "function":
@@ -1177,10 +1312,21 @@ class Interpreter:
                         self.fail(token, str(error), type(error))
 
         if callable(target):
+            frame = {
+                "name": callee_name,
+                "source": self.filename or "<source>",
+                "position": token.get("position", self.error_position),
+                "end": token.get("end", self.error_end),
+                "content": self.content,
+            }
+            self.call_stack.append(frame)
             try:
                 return target(*args, **kwargs)
             except (TypeError, ValueError, KeyError, IndexError, AttributeError) as error:
                 self.fail(token, str(error), type(error))
+            finally:
+                if self.call_stack and self.call_stack[-1] == frame:
+                    self.call_stack.pop()
         self.fail(callee, "value is not callable", TypeError)
 
     def invoke_function(self, func: dict, args: list, token: dict, kwargs: dict | None = None):
@@ -1190,6 +1336,13 @@ class Interpreter:
         kwargs = dict(kwargs or {})
         remaining_args = list(args)
         bound: dict[str, object] = {}
+
+        previous_filename = self.filename
+        previous_content = self.content
+        source = func.get("source") or self.filename
+        content = func.get("content") or self.content
+        self.filename = source
+        self.content = content
 
         variadic_positional_name = next((name for name in params if isinstance(defaults.get(name), dict) and defaults[name].get("type") == "string" and defaults[name].get("value") == "*"), None)
         variadic_keyword_name = next((name for name in params if isinstance(defaults.get(name), dict) and defaults[name].get("type") == "string" and defaults[name].get("value") == "**"), None)
@@ -1243,7 +1396,20 @@ class Interpreter:
                 "instance": scope["self"],
                 "class": current_class or (scope["self"].get("__class__") if isinstance(scope["self"], dict) else None),
             }
-        self.scopes = list(func.get("scope", self.scopes)) + [scope]
+        func_scope = list(func.get("scope", self.scopes))
+        if func_scope and isinstance(func_scope[0], dict):
+            file_path, dir_path = self._resolve_file_context(source)
+            func_scope[0]["_this"] = file_path
+            func_scope[0]["_here"] = dir_path
+        self.scopes = func_scope + [scope]
+        frame = {
+            "name": func.get("name") or func.get("__name__") or "<anonymous>",
+            "source": func.get("source") or self.filename or "<source>",
+            "position": token.get("position", self.error_position) if isinstance(token, dict) else self.error_position,
+            "end": token.get("end", self.error_end) if isinstance(token, dict) else self.error_end,
+            "content": func.get("content") or self.content or "",
+        }
+        self.call_stack.append(frame)
         try:
             result = self.lines(body)
             if isinstance(result, tuple) and result[0] == "return":
@@ -1251,6 +1417,10 @@ class Interpreter:
             return result
         finally:
             self.scopes = previous
+            self.filename = previous_filename
+            self.content = previous_content
+            if self.call_stack and self.call_stack[-1] == frame:
+                self.call_stack.pop()
 
     def instantiate_class(self, class_def: dict, args: list, token: dict, kwargs: dict | None = None):
         instance = {"__class__": class_def}
@@ -1382,22 +1552,25 @@ class Interpreter:
                         elif isinstance(child, dict) and child.get("type") == "identifier":
                             params.append(child["value"])
                             defaults[child["value"]] = None
-                    func = {"kind": "function", "name": None, "params": params, "defaults": defaults, "body": body, "scope": list(self.scopes), "trigger_name": str(trigger_name), "source": self.filename if self.filename not in {"<source>", ""} else "<source>"}
+                    func = {"kind": "function", "name": None, "params": params, "defaults": defaults, "body": body, "scope": list(self.scopes), "trigger_name": str(trigger_name), "source": self.filename if self.filename not in {"<source>", ""} else "<source>", "content": self.content}
                     self._register_trigger_handler(func)
                     return func
                 if isinstance(callee_value, dict) and callee_value.get("kind") == "function":
                     params: list[str] = []
-                    defaults: dict[str, dict] = {}
+                    defaults: dict[str, object] = {}
                     for child in target.get("children", [])[1:]:
                         if isinstance(child, dict) and child.get("type") == "assignment":
                             left, right = child.get("children", [None, None])
                             if isinstance(left, dict) and left.get("type") == "identifier" and right is not None:
                                 params.append(left["value"])
                                 defaults[left["value"]] = right
-                            else:
-                                self.fail(token, f"undefined name {child['value']!r}. if you meant to add a parameter, use {child['value']}=null instead.", SyntaxError)
-                        elif isinstance(child, dict) and child.get("type") == "identifier":
+                                continue
                             self.fail(token, f"undefined name {child['value']!r}. if you meant to add a parameter, use {child['value']}=null instead.", SyntaxError)
+                        if isinstance(child, dict) and child.get("type") == "identifier":
+                            params.append(child["value"])
+                            defaults[child["value"]] = None
+                            continue
+                        self.fail(token, f"undefined name {child['value']!r}. if you meant to add a parameter, use {child['value']}=null instead.", SyntaxError)
                     return {"kind": "function", "name": None, "params": params, "defaults": defaults, "body": body, "scope": list(self.scopes)}
                 bases = []
                 for child in target.get("children", [])[1:]:
