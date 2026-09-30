@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -427,6 +428,34 @@ def test_trigger_handler_errors_keep_the_handler_frame(tmp_path, monkeypatch):
     error = excinfo.value
     assert any("game.na" in frame.get("source", "") for frame in error.frames)
     assert any(frame.get("name") == "<anonymous>" or frame.get("name") == "main" for frame in error.frames)
+    assert any(frame.get("name") == "trigger" for frame in error.frames)
+
+
+def test_trigger_builtin_python_errors_keep_the_trigger_stack(tmp_path, monkeypatch):
+    (tmp_path / "module.na").write_text('''
+        on("start") {
+            require from import_python("nitrogen")
+            play from require("c")
+            play("missing.wav")
+        }
+    ''')
+    (tmp_path / "main.na").write_text('''
+        trigger("start")
+    ''')
+
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(SodiumError) as excinfo:
+        Interpreter(SODIUM, []).run(
+            Tokenizer(SODIUM, []).run((tmp_path / "main.na").read_text()),
+            (tmp_path / "main.na").read_text(),
+            str(tmp_path / "main.na"),
+        )
+
+    error = excinfo.value
+    assert error.kind == "runtime"
+    assert any(frame.get("name") == "trigger" for frame in error.frames)
+    assert any("module.na" in frame.get("source", "") for frame in error.frames)
+    assert "missing.wav" in str(error)
 
 
 def test_cli_reports_trigger_handler_frame_in_traceback(tmp_path):
@@ -454,6 +483,82 @@ def test_cli_reports_trigger_handler_frame_in_traceback(tmp_path):
     assert "on(\"start\")" in result.stdout
     assert "    test" in result.stdout
     assert "undefined name 'test'" in result.stdout
+
+
+def test_error_output_clamps_highlight_to_line_end(capsys):
+    SODIUM.script.error(TypeError("boom"), "main.na", 'trigger("startGame")', 250, 251, "runtime")
+    output = re.sub(r"\x1b\[[0-9;]*m", "", capsys.readouterr().out)
+
+    assert "main.na:1:250" not in output
+    assert "main.na:1:20" in output
+    assert "trigger(\"startGame\")" in output
+    assert "runtime error" in output
+    assert "boom" in output
+    assert re.search(r"\s\^", output) is not None
+
+
+def test_error_output_skips_caret_for_trigger_event_frames(capsys):
+    SODIUM.script.error(
+        TypeError("boom"),
+        "main.na",
+        "",
+        0,
+        1,
+        "runtime",
+        frames=[{
+            "name": "<anonymous>",
+            "source": "module.na",
+            "position": 20,
+            "end": 25,
+            "content": 'on("end") {\n    require from import_python("nitrogen")\n    play("missing.wav")\n}',
+            "trigger_name": "end",
+        }],
+    )
+    output = re.sub(r"\x1b\[[0-9;]*m", "", capsys.readouterr().out)
+
+    assert 'module.na:2 in <anonymous>' in output
+    assert 'require from import_python("nitrogen")' in output
+    assert re.search(r"\n\s+\|\s+\^+", output) is None
+
+
+def test_error_output_keeps_source_and_message_when_no_snippet_is_available(capsys):
+    SODIUM.script.error(
+        TypeError("boom"),
+        "main.na",
+        "",
+        9,
+        10,
+        "runtime",
+        frames=[{"name": "main", "source": "main.na", "position": 9, "end": 10}],
+    )
+    output = re.sub(r"\x1b\[[0-9;]*m", "", capsys.readouterr().out)
+
+    assert "main.na" in output
+    assert "runtime error" in output
+    assert "boom" in output
+    assert re.search(r"main\.na:\d+:\d+", output) is not None
+
+
+def test_error_output_keeps_full_call_stack_even_when_an_earlier_frame_has_no_content(capsys):
+    SODIUM.script.error(
+        TypeError("boom"),
+        "main.na",
+        'trigger("startGame")',
+        0,
+        1,
+        "runtime",
+        frames=[
+            {"name": "outer", "source": "outer.na", "position": 12, "end": 13, "content": "outer()"},
+            {"name": "inner", "source": "inner.na", "position": 4, "end": 5},
+        ],
+    )
+    output = re.sub(r"\x1b\[[0-9;]*m", "", capsys.readouterr().out)
+
+    assert "Traceback (most recent call last):" in output
+    assert 'File "outer.na"' in output
+    assert 'File "inner.na"' in output
+    assert "runtime error" in output
+    assert "boom" in output
 
 
 def test_python_modules_and_objects_support_dot_member_access():

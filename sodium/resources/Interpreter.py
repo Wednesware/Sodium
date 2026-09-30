@@ -1264,6 +1264,8 @@ class Interpreter:
                     callee_name = member_name
         elif hasattr(target, "__name__") and target.__name__:
             callee_name = str(target.__name__)
+            if callee_name.startswith("_builtin_"):
+                callee_name = callee_name[len("_builtin_") :]
 
         if isinstance(target, dict):
             kind = target.get("kind")
@@ -1326,7 +1328,9 @@ class Interpreter:
             self.call_stack.append(frame)
             try:
                 return target(*args, **kwargs)
-            except (TypeError, ValueError, KeyError, IndexError, AttributeError) as error:
+            except Exception as error:
+                if isinstance(error, SodiumError):
+                    raise
                 self.fail(token, str(error), type(error))
             finally:
                 if self.call_stack and self.call_stack[-1] == frame:
@@ -1412,10 +1416,16 @@ class Interpreter:
             "position": token.get("position", self.error_position) if isinstance(token, dict) else self.error_position,
             "end": token.get("end", self.error_end) if isinstance(token, dict) else self.error_end,
             "content": func.get("content") or self.content or "",
+            "trigger_name": func.get("trigger_name"),
         }
         self.call_stack.append(frame)
         try:
-            result = self.lines(body)
+            try:
+                result = self.lines(body)
+            except Exception as error:
+                if isinstance(error, SodiumError):
+                    raise
+                self.fail(token, str(error), type(error))
             if isinstance(result, tuple) and result[0] == "return":
                 return result[1]
             return result
