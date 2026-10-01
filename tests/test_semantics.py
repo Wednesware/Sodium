@@ -124,6 +124,19 @@ def test_python_module_namespaces_allow_dot_access_for_static_members():
     assert result == 0
 
 
+def test_dot_access_only_sees_class_members_not_instance_members():
+    with pytest.raises(SodiumError):
+        run_source('''
+            Person = class() {
+                x = 10
+                init = function(self) {
+                    self.z = 30
+                }
+            }
+            print(Person().z)
+        ''')
+
+
 def test_percentages_work_as_postfix_values_and_modulo_as_binary():
     result = run_source('''
         x = 30% + 10 + 50%

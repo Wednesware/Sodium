@@ -129,6 +129,36 @@ This prints a friendly name such as:
 <instance Thing>
 ```
 
+### Member access rules
+
+Sodium separates class/static members from instance members:
+
+- `.` reads members on the class or type itself
+- `:` reads members on an instance object
+- class fields defined in the class body are available on the class via `.`
+- instance fields created during `init` are only available on the instance via `:`
+
+```sodium
+Person = class() {
+    species = "human"
+    init = function(self) {
+        self.name = "danny"
+    }
+}
+
+print(Person.species)    # class/static member
+print(Person().species)   # class/static member still visible through the instance
+print(Person():name)      # instance member
+```
+
+Builtins and imported Python modules also follow the same rule:
+
+```sodium
+print(string.capitalize("hi"))
+print("hi":capitalize())
+print(import_python("time"):sleep)
+```
+
 ## Conditions and handlers
 
 Sodium conditionals are value-like and can be stored in variables:

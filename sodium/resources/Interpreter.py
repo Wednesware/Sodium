@@ -1129,21 +1129,26 @@ class Interpreter:
                         return {"kind": "bound_method", "method": found, "instance": instance, "class": current_class}
                     return found
                 label = (current_class or {}).get("name", "super") if isinstance(current_class, dict) else "super"
-                self.fail(token, f"'{label}' has no member {name!r}", AttributeError)
+                self.fail(token, f"'{label}' has no object member {name!r}", AttributeError)
             if obj.get("kind") == "class":
                 found = self.resolve_class_member(obj, name)
                 if found is not None:
                     return found
                 label = obj.get("name") or "class"
-                self.fail(token, f"'{label}' has no member {name!r}", AttributeError)
+                self.fail(token, f"'{label}' has no object member {name!r}", AttributeError)
+            if "__class__" in obj:
+                class_def = obj.get("__class__")
+                if isinstance(class_def, dict):
+                    found = self.resolve_class_member(class_def, name)
+                    if found is not None:
+                        return found
+                subject = class_def if isinstance(class_def, dict) else obj
+                label = getattr(subject, "__name__", None) or getattr(subject, "name", None) or self.public_type_name(subject)
+                self.fail(token, f"'{label}' has no static member {name!r}", AttributeError)
             if name in obj:
                 return obj[name]
-            if "__class__" in obj:
-                subject = obj.get("__class__", obj)
-                label = getattr(subject, "__name__", None) or getattr(subject, "name", None) or self.public_type_name(subject)
-                self.fail(token, f"'{label}' is an object; use ':' for object members", AttributeError)
             label = self.public_type_name(obj)
-            self.fail(token, f"'{label}' has no member {name!r}", AttributeError)
+            self.fail(token, f"'{label}' has no object member {name!r}", AttributeError)
 
         for candidate in self._builtin_type_members(obj):
             if hasattr(candidate, name):
@@ -1153,26 +1158,26 @@ class Interpreter:
             if hasattr(obj, name):
                 return getattr(obj, name)
             label = getattr(obj, "__name__", None) or self.public_type_name(obj)
-            self.fail(token, f"'{label}' has no member {name!r}", AttributeError)
+            self.fail(token, f"'{label}' has no object member {name!r}", AttributeError)
 
         module_name = type(obj).__name__ if not isinstance(obj, dict) else ""
         if module_name == "module":
             if hasattr(obj, name):
                 return getattr(obj, name)
             label = getattr(type(obj), "__name__", None) or self.public_type_name(obj)
-            self.fail(token, f"'{label}' has no member {name!r}", AttributeError)
+            self.fail(token, f"'{label}' has no object member {name!r}", AttributeError)
 
         if hasattr(obj, "__class__") and not self._builtin_type_members(obj):
             subject = obj.get("__class__", obj) if isinstance(obj, dict) else obj
             label = getattr(subject, "__name__", None) or getattr(subject, "name", None) or self.public_type_name(subject)
-            self.fail(token, f"'{label}' is an object; use ':' for object members", AttributeError)
+            self.fail(token, f"'{label}' has no static member {name!r}", AttributeError)
 
         if hasattr(obj, name):
             return getattr(obj, name)
 
         subject = obj.get("__class__", obj) if isinstance(obj, dict) else obj
         label = getattr(subject, "__name__", None) or getattr(subject, "name", None) or self.public_type_name(subject)
-        self.fail(token, f"'{label}' has no member {name!r}", AttributeError)
+        self.fail(token, f"'{label}' has no object member {name!r}", AttributeError)
 
     def instance_member(self, obj, name: str, token: dict):
         if isinstance(obj, dict):
@@ -1191,7 +1196,7 @@ class Interpreter:
             return getattr(obj, name)
         subject = obj.get("__class__", obj) if isinstance(obj, dict) else obj
         label = getattr(subject, "__name__", None) or getattr(subject, "name", None) or self.public_type_name(subject)
-        self.fail(token, f"'{label}' has no member {name!r}", AttributeError)
+        self.fail(token, f"'{label}' has no object member {name!r}", AttributeError)
 
     def resolve_super_member(self, class_def: dict, name: str):
         if not isinstance(class_def, dict):

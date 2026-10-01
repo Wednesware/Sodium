@@ -1,2 +1,9 @@
-trigger("start2")
-print("this should run second")
+Person = class(){
+    x = 10
+    y = 20
+    init = function(self) {
+        self.z = 30
+    }
+}
+
+print(Person():z)
