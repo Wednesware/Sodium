@@ -1102,6 +1102,22 @@ class Interpreter:
             queue.extend(current.get("bases", []))
         return None
 
+    def _builtin_type_members(self, obj):
+        if isinstance(obj, type):
+            return [obj]
+        function = getattr(obj, "__func__", obj)
+        name = getattr(function, "__name__", "")
+        type_map = {
+            "_builtin_string": [str],
+            "_builtin_number": [int, float],
+            "_builtin_boolean": [bool],
+            "_builtin_array": [list],
+            "_builtin_map": [dict],
+            "_builtin_set": [set],
+            "_builtin_bytes": [bytes],
+        }
+        return type_map.get(name, [])
+
     def member(self, obj, name: str, token: dict):
         if isinstance(obj, dict):
             if obj.get("kind") == "super":
@@ -1121,25 +1137,42 @@ class Interpreter:
                 label = obj.get("name") or "class"
                 self.fail(token, f"'{label}' has no member {name!r}", AttributeError)
             if name in obj:
-                if "__class__" in obj:
-                    subject = obj.get("__class__", obj)
-                    label = getattr(subject, "__name__", None) or getattr(subject, "name", None) or self.public_type_name(subject)
-                    self.fail(token, f"'{label}' does not support '.' access", AttributeError)
                 return obj[name]
             if "__class__" in obj:
                 subject = obj.get("__class__", obj)
                 label = getattr(subject, "__name__", None) or getattr(subject, "name", None) or self.public_type_name(subject)
-                self.fail(token, f"'{label}' does not support '.' access", AttributeError)
+                self.fail(token, f"'{label}' is an object; use ':' for object members", AttributeError)
             label = self.public_type_name(obj)
-            self.fail(token, f"'{label}' does not support '.' access", AttributeError)
-        if hasattr(obj, name):
-            return getattr(obj, name)
+            self.fail(token, f"'{label}' has no member {name!r}", AttributeError)
+
+        for candidate in self._builtin_type_members(obj):
+            if hasattr(candidate, name):
+                return getattr(candidate, name)
+
         if isinstance(obj, type):
+            if hasattr(obj, name):
+                return getattr(obj, name)
             label = getattr(obj, "__name__", None) or self.public_type_name(obj)
             self.fail(token, f"'{label}' has no member {name!r}", AttributeError)
+
+        module_name = type(obj).__name__ if not isinstance(obj, dict) else ""
+        if module_name == "module":
+            if hasattr(obj, name):
+                return getattr(obj, name)
+            label = getattr(type(obj), "__name__", None) or self.public_type_name(obj)
+            self.fail(token, f"'{label}' has no member {name!r}", AttributeError)
+
+        if hasattr(obj, "__class__") and not self._builtin_type_members(obj):
+            subject = obj.get("__class__", obj) if isinstance(obj, dict) else obj
+            label = getattr(subject, "__name__", None) or getattr(subject, "name", None) or self.public_type_name(subject)
+            self.fail(token, f"'{label}' is an object; use ':' for object members", AttributeError)
+
+        if hasattr(obj, name):
+            return getattr(obj, name)
+
         subject = obj.get("__class__", obj) if isinstance(obj, dict) else obj
         label = getattr(subject, "__name__", None) or getattr(subject, "name", None) or self.public_type_name(subject)
-        self.fail(token, f"'{label}' does not support '.' access", AttributeError)
+        self.fail(token, f"'{label}' has no member {name!r}", AttributeError)
 
     def instance_member(self, obj, name: str, token: dict):
         if isinstance(obj, dict):

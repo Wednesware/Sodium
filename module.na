@@ -1,4 +1,4 @@
-on("start") {
+on("start2") {
     sleep from import_python("time")
     sleep(1)
     print("this should run first")

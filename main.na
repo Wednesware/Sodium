@@ -1,2 +1,2 @@
-trigger("start")
+trigger("start2")
 print("this should run second")

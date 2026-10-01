@@ -93,6 +93,37 @@ def test_class_fields_are_accessible_from_the_class_value():
     assert result == 0
 
 
+def test_type_members_use_dot_and_object_members_use_colon():
+    result = run_source('''
+        print("hi":capitalize())
+        print(string.capitalize("hi"))
+    ''')
+    assert result == 0
+
+
+def test_dot_access_uses_class_static_members_and_colon_accesses_instance_members():
+    result = run_source('''
+        Person = class() {
+            species = "human"
+            init = function(self) {
+                self.name = "danny"
+            }
+        }
+        print(Person.species)
+        print(Person().species)
+        print(Person():name)
+    ''')
+    assert result == 0
+
+
+def test_python_module_namespaces_allow_dot_access_for_static_members():
+    result = run_source('''
+        time = import_python("time")
+        print(time.sleep)
+    ''')
+    assert result == 0
+
+
 def test_percentages_work_as_postfix_values_and_modulo_as_binary():
     result = run_source('''
         x = 30% + 10 + 50%
