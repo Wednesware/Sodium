@@ -93,6 +93,35 @@ def test_class_fields_are_accessible_from_the_class_value():
     assert result == 0
 
 
+def test_dataclass_creates_init_parameters_from_class_fields():
+    result = run_source('''
+        Point = dataclass(class() {
+            x = 0
+            y = 0
+        })
+        point = Point(2, 3)
+        print(point:x)
+        print(point:y)
+
+        Point2 = dataclass() {
+            x = 0
+            y = 0
+        }
+        point2 = Point2(4, 5)
+        print(point2:x)
+        print(point2:y)
+
+        Point3 = dataclass {
+            x = 0
+            y = 0
+        }
+        point3 = Point3(6, 7)
+        print(point3:x)
+        print(point3:y)
+    ''')
+    assert result == 0
+
+
 def test_type_members_use_dot_and_object_members_use_colon():
     result = run_source('''
         print("hi":capitalize())

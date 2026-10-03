@@ -1,9 +1,6 @@
-Person = class(){
-    x = 10
-    y = 20
-    init = function(self) {
-        self.z = 30
-    }
+Person = dataclass{
+    name = null
+    age = null
 }
 
-print(Person():z)
+print(Person():age)

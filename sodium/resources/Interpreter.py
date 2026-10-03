@@ -160,6 +160,7 @@ class Interpreter:
             "array": self._builtin_array,
             "map": self._builtin_map,
             "set": self._builtin_set,
+            "dataclass": self._builtin_dataclass,
             "bytes": self._builtin_bytes,
             "open": self._builtin_open,
             "read_file": self._builtin_read_file,
@@ -284,6 +285,63 @@ class Interpreter:
         if len(values) == 1 and isinstance(values[0], (list, tuple, set)):
             return set(values[0])
         return set(values)
+
+    def _builtin_dataclass(self, class_def):
+        if not isinstance(class_def, dict) or class_def.get("kind") != "class":
+            raise TypeError("dataclass requires a class value")
+        if "init" in class_def.get("members", {}) or "init" in class_def.get("methods", {}):
+            return class_def
+
+        field_names: list[str] = []
+        defaults: dict[str, object] = {}
+        seen: set[str] = set()
+
+        def collect_from_class(current):
+            if not isinstance(current, dict):
+                return
+            for base in current.get("bases", []):
+                collect_from_class(base)
+            for name, value in current.get("members", {}).items():
+                if isinstance(value, dict) and value.get("kind") in {"function", "class", "condition"}:
+                    continue
+                if name in seen:
+                    defaults[name] = value
+                    continue
+                seen.add(name)
+                field_names.append(name)
+                defaults[name] = value
+
+        collect_from_class(class_def)
+
+        if not field_names:
+            return class_def
+
+        body = [[
+            {
+                "type": "assignment",
+                "value": None,
+                "children": [
+                    {"type": "member", "value": name, "children": [{"type": "identifier", "value": "self"}]},
+                    {"type": "identifier", "value": name},
+                ],
+            }
+            for name in field_names
+        ]]
+
+        init_func = {
+            "kind": "function",
+            "name": "init",
+            "params": ["self", *field_names],
+            "defaults": defaults,
+            "body": body,
+            "scope": list(self.scopes),
+            "owner": class_def,
+        }
+        class_def["init"] = init_func
+        class_def["members"]["init"] = init_func
+        class_def["methods"]["init"] = init_func
+        init_func["owner"] = class_def
+        return class_def
 
     def _builtin_bytes(self, value):
         return bytes(value)
@@ -1527,6 +1585,28 @@ class Interpreter:
                         return class_def
                     finally:
                         self.scopes = previous
+                if callee_name == "dataclass":
+                    class_def = {"kind": "class", "name": None, "bases": [], "methods": {}, "members": {}, "body": body, "scope": list(self.scopes)}
+                    scope = {}
+                    previous = self.scopes
+                    self.scopes = list(self.scopes) + [scope]
+                    try:
+                        for line in body:
+                            for statement in line:
+                                result = self.value(statement)
+                                if isinstance(statement, dict) and statement.get("type") == "assignment":
+                                    left = statement["children"][0]
+                                    if isinstance(left, dict) and left.get("type") == "identifier":
+                                        name = left["value"]
+                                        scope[name] = result
+                                        class_def["members"][name] = result
+                                        class_def[name] = result
+                                        if isinstance(result, dict) and result.get("kind") in {"function", "class", "condition"}:
+                                            result["owner"] = class_def
+                                            class_def["methods"][name] = result
+                        return self._builtin_dataclass(class_def)
+                    finally:
+                        self.scopes = previous
             if target.get("type") == "call":
                 callee = target.get("children", [None])[0]
                 callee_value = self.value(callee) if isinstance(callee, dict) else None
@@ -1624,6 +1704,28 @@ class Interpreter:
                             continue
                         self.fail(token, f"undefined name {child['value']!r}. if you meant to add a parameter, use {child['value']}=null instead.", SyntaxError)
                     return {"kind": "function", "name": None, "params": params, "defaults": defaults, "body": body, "scope": list(self.scopes)}
+                if isinstance(callee, dict) and callee.get("type") == "identifier" and callee.get("value") == "dataclass":
+                    class_def = {"kind": "class", "name": None, "bases": [], "methods": {}, "members": {}, "body": body, "scope": list(self.scopes)}
+                    scope = {}
+                    previous = self.scopes
+                    self.scopes = list(self.scopes) + [scope]
+                    try:
+                        for line in body:
+                            for statement in line:
+                                result = self.value(statement)
+                                if isinstance(statement, dict) and statement.get("type") == "assignment":
+                                    left = statement["children"][0]
+                                    if isinstance(left, dict) and left.get("type") == "identifier":
+                                        name = left["value"]
+                                        scope[name] = result
+                                        class_def["members"][name] = result
+                                        class_def[name] = result
+                                        if isinstance(result, dict) and result.get("kind") in {"function", "class", "condition"}:
+                                            result["owner"] = class_def
+                                            class_def["methods"][name] = result
+                        return self._builtin_dataclass(class_def)
+                    finally:
+                        self.scopes = previous
                 bases = []
                 for child in target.get("children", [])[1:]:
                     value = self.value(child)
