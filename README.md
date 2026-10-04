@@ -17,6 +17,16 @@ It is intentionally lightweight. There are no hidden Python-only internals expos
 - Python 3.12+
 - Nitrogen 26.62+ (`pip install wwn`)
 
+## Installation
+
+### Library only
+
+> `n2 get na`
+
+### Library & `na` command (recommended)
+
+> `n2 get na && n2 install na`
+
 ## Running a program
 
 Use the CLI entry point:
