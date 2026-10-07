@@ -29,10 +29,10 @@ It is intentionally lightweight. There are no hidden Python-only internals expos
 
 ## Running a program
 
-Use the CLI entry point:
+Use the command:
 
 ```bash
-python -m sodium main.na
+na main.na
 ```
 
 A file is executed top-to-bottom. If the program exits successfully, the interpreter returns status code 0. Even when the last statement evaluates to a value, the interpreter does not leak that raw value to the shell as a Python dict.
