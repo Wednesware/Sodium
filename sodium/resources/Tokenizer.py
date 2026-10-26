@@ -204,10 +204,7 @@ class Tokenizer:
 
     def statement(self) -> dict:
         if self.peek()["type"] == "identifier" and self.peek()["value"] == "return":
-            self.take()
-            if self.peek()["type"] == "newline" or self.peek()["value"] == ";" or self.peek()["value"] == "}" or self.peek()["type"] == "eof":
-                return self.token("return")
-            return self.token("return", children=[self.expression()])
+            raise SyntaxError("return is a function; use return(value) or return()")
         if self.peek()["type"] == "identifier" and self.peek()["value"] == "import":
             self.take()
             if self.peek()["type"] in {"newline", "eof"} or self.peek()["value"] == "}":
