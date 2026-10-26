@@ -53,8 +53,8 @@ def test_import_statement_loads_module_values(tmp_path):
     module_path = tmp_path / "maths.na"
     module_path.write_text('''
         value = 21 + 21
-        add = function(a, b) {
-            return a + b
+        add = function(a=null, b=null) {
+            return(a + b)
         }
     ''')
 
@@ -73,7 +73,7 @@ def test_import_statement_loads_module_values(tmp_path):
 def test_class_definition_factory_supports_method_blocks():
     result = run_source('''
         Thing = class() {
-            init = function(self, value) {
+            init = function(self=null, value=null) {
                 self.value = value
             }
         }
@@ -134,7 +134,7 @@ def test_dot_access_uses_class_static_members_and_colon_accesses_instance_member
     result = run_source('''
         Person = class() {
             species = "human"
-            init = function(self) {
+            init = function(self=null) {
                 self.name = "danny"
             }
         }
@@ -158,7 +158,7 @@ def test_dot_access_only_sees_class_members_not_instance_members():
         run_source('''
             Person = class() {
                 x = 10
-                init = function(self) {
+                init = function(self=null) {
                     self.z = 30
                 }
             }
@@ -646,3 +646,28 @@ def test_python_modules_and_objects_support_dot_member_access():
 def test_top_level_run_returns_zero_for_success():
     assert run_source('x = 10') == 0
     assert run_source('print(1)') == 0
+
+def test_2611_explicit_loop_bindings(capsys):
+    run_source('''
+        for(i=range(3)) {
+            print(i)
+        }
+    ''')
+    assert capsys.readouterr().out.strip().splitlines() == ["0", "1", "2"]
+
+
+def test_2611_bare_for_binding_is_rejected():
+    with pytest.raises(SodiumError):
+        run_source('for(i in range(2)) { print(i) }')
+
+
+def test_2611_function_parameters_need_defaults():
+    with pytest.raises(SodiumError):
+        run_source('f = function(a, b) { return(a) }')
+    assert run_source('f = function(a=null, b=2) { return(a + b) }; print(f(3))') == 0
+
+
+def test_2611_return_is_a_function_call():
+    with pytest.raises(SyntaxError):
+        Tokenizer(SODIUM, []).run('f = function() { return true }')
+    assert run_source('f = function() { return(true) }; print(f())') == 0

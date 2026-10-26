@@ -1630,9 +1630,13 @@ class Interpreter:
                     if len(target.get("children", [])) < 2:
                         self.fail(token, "for() requires a target and iterable", TypeError)
                     expr = target.get("children", [None, None])[1]
-                    if not isinstance(expr, dict) or expr.get("type") != "operator" or expr.get("value") != "in":
-                        self.fail(token, "for() requires a target in iterable expression", TypeError)
+                    if not isinstance(expr, dict) or expr.get("type") != "assignment" or expr.get("value") != "=":
+                        self.fail(token, "for() requires a named iterable: for(item=iterable)", TypeError)
                     target_var, iterable = expr.get("children", [None, None])
+                    if not isinstance(target_var, dict) or target_var.get("type") != "identifier":
+                        self.fail(token, "for() loop target must be an identifier", TypeError)
+                    if len(target.get("children", [])) != 2:
+                        self.fail(token, "for() accepts exactly one named iterable", TypeError)
                     source = self.value(iterable)
                     last = None
                     if isinstance(source, dict):
@@ -1699,9 +1703,7 @@ class Interpreter:
                                 continue
                             self.fail(token, f"undefined name {child['value']!r}. if you meant to add a parameter, use {child['value']}=null instead.", SyntaxError)
                         if isinstance(child, dict) and child.get("type") == "identifier":
-                            params.append(child["value"])
-                            defaults[child["value"]] = None
-                            continue
+                            self.fail(token, "function parameters require defaults: function(name=null)", SyntaxError)
                         self.fail(token, f"undefined name {child['value']!r}. if you meant to add a parameter, use {child['value']}=null instead.", SyntaxError)
                     return {"kind": "function", "name": None, "params": params, "defaults": defaults, "body": body, "scope": list(self.scopes)}
                 if isinstance(callee, dict) and callee.get("type") == "identifier" and callee.get("value") == "dataclass":
