@@ -111,8 +111,8 @@ Result:
 Functions may take parameters:
 
 ```sodium
-add = function(a, b) {
-    return a + b
+add = function(a=null, b=null) {
+    return(a + b)
 }
 
 print(add(2, 3))
@@ -124,7 +124,7 @@ Classes are also runtime values and can be bound to names. Instance objects are 
 
 ```sodium
 Thing = class() {
-    init = function(self, value) {
+    init = function(self=null, value=null) {
         self.value = value
     }
 }
@@ -246,8 +246,8 @@ If `maths.na` contains:
 ```sodium
 value = 21 + 21
 
-add = function(a, b) {
-    return a + b
+add = function(a=null, b=null) {
+    return(a + b)
 }
 ```
 
@@ -314,16 +314,16 @@ The latter is an internal representation leak and is intentionally avoided in th
 ```sodium
 message = "hello from Sodium"
 
-say_hello = function(name) {
+say_hello = function(name=null) {
     print("Hello, " + name)
-    return "done"
+    return("done")
 }
 
 print(message)
 say_hello("friend")
 
 Thing = class() {
-    init = function(self, value) {
+    init = function(self=null, value=null) {
         self.value = value
     }
 }
@@ -340,3 +340,23 @@ print(item)
 - The language runtime aims to be clear, debuggable, and human-friendly.
 
 This documentation is intentionally written as a practical reference for the language as it exists today, focusing on syntax, runtime behavior, and usability.
+
+## Sodium 26.11: explicit call syntax
+
+Loop bindings use named iterable arguments, not `in`:
+
+```sodium
+for(i=range(5)) {
+    print(i)
+}
+```
+
+Function parameters are written with explicit defaults:
+
+```sodium
+add = function(a=null, b=2) {
+    return(a + b)
+}
+```
+
+Bare `function(a, b)` and statement-form `return value` are invalid. Use `return(value)` or `return()` instead. `while(condition) { ... }` still reevaluates its condition dynamically.
